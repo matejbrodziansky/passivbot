@@ -3,126 +3,250 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Passivbot Monitor Dashboard</title>
+  <title>Passivbot Monitor</title>
   <link rel="stylesheet" href="/dashboard/assets/dashboard.css">
 </head>
 <body>
-  <div class="page-shell">
-    <header class="hero">
-      <div class="hero-copy">
-        <p class="eyebrow">Passivbot Monitor Dashboard</p>
-        <h1 id="hero-title">Connecting...</h1>
-        <p id="hero-subtitle" class="hero-subtitle">Waiting for relay snapshot.</p>
+  <div class="app">
+
+    <!-- NAVBAR -->
+    <nav class="navbar">
+      <div class="navbar-brand">
+        <svg class="brand-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+        </svg>
+        <span class="brand-name">Passivbot</span>
+        <span class="brand-badge">Monitor</span>
       </div>
-      <div class="hero-actions">
-        <label class="control">
-          <span>Focus Symbol</span>
-          <select id="focus-symbol">
-            <option value="">Auto</option>
-          </select>
-        </label>
-        <button id="refresh-button" type="button">Refresh Snapshot</button>
+
+      <div class="navbar-hero">
+        <p id="hero-title" class="navbar-hero-title">Connecting...</p>
+        <p id="hero-subtitle" class="navbar-hero-subtitle">Waiting for relay snapshot.</p>
       </div>
-    </header>
 
-    <section class="status-strip">
-      <div class="status-chip" id="ws-status">WS: connecting</div>
-      <div class="status-chip" id="snapshot-status">Snapshot: waiting</div>
-      <div class="status-chip" id="focus-status">Focus: auto</div>
-      <div class="status-chip" id="relay-status">Relay: -</div>
-    </section>
+      <div class="navbar-status">
+        <div class="status-chip" id="ws-status">WS: connecting</div>
+        <div class="status-chip" id="snapshot-status">Snapshot: waiting</div>
+        <div class="status-chip" id="focus-status">Focus: auto</div>
+        <div class="status-chip" id="relay-status">Relay: -</div>
+      </div>
 
-    <main class="dashboard-grid">
-      <section class="panel panel-bots">
-        <div class="panel-head">
-          <h2>Bot Overview</h2>
-          <span id="bots-meta" class="panel-tag">0 bots</span>
-        </div>
-        <div id="bot-overview" class="overview-grid"></div>
-      </section>
+      <div class="navbar-actions">
+        <button id="bot-control-btn" type="button" class="bot-control-btn" data-state="loading">
+          <span class="bot-control-dot"></span>
+          <span class="bot-control-label">…</span>
+        </button>
+        <select id="focus-symbol" class="focus-select">
+          <option value="">Auto</option>
+        </select>
+        <button id="refresh-button" type="button" class="refresh-btn">&#x21BB; Refresh</button>
+      </div>
+    </nav>
 
-      <section class="panel panel-summary">
-        <div class="panel-head">
-          <h2>Focused Bot</h2>
-          <span id="summary-meta" class="panel-tag">-</span>
-        </div>
-        <div class="stats-grid" id="summary-cards"></div>
-      </section>
+    <!-- SIDEBAR -->
+    <aside class="sidebar">
+      <nav class="sidebar-nav">
+        <button class="nav-item is-active" data-view="overview">
+          <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+            <rect x="3" y="3" width="8" height="8" rx="1"/>
+            <rect x="13" y="3" width="8" height="8" rx="1"/>
+            <rect x="3" y="13" width="8" height="8" rx="1"/>
+            <rect x="13" y="13" width="8" height="8" rx="1"/>
+          </svg>
+          Overview
+        </button>
+        <button class="nav-item" data-view="activity">
+          <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+          </svg>
+          Activity
+        </button>
+        <button class="nav-item" data-view="analysis">
+          <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+            <line x1="18" y1="20" x2="18" y2="10"/>
+            <line x1="12" y1="20" x2="12" y2="4"/>
+            <line x1="6" y1="20" x2="6" y2="14"/>
+          </svg>
+          Analysis
+        </button>
+        <button class="nav-item" data-view="config">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+          </svg>
+          Config
+        </button>
+      </nav>
 
-      <section class="panel panel-focus">
-        <div class="panel-head">
-          <h2>Focus</h2>
-          <span id="focus-label" class="panel-tag">auto</span>
-        </div>
-        <div id="focus-details" class="detail-list"></div>
-      </section>
+      <div class="sidebar-bots">
+        <p class="sidebar-section-title">Bots</p>
+        <div id="sidebar-bot-list"></div>
+      </div>
+    </aside>
 
-      <section class="panel panel-positions">
-        <div class="panel-head">
-          <h2>Positions</h2>
-          <span id="positions-meta" class="panel-tag">-</span>
-        </div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Symbol</th>
-                <th>Side</th>
-                <th>Size @ Price</th>
-                <th>WE</th>
-                <th>WEL / WELe</th>
-                <th>PA Dist</th>
-                <th>uPnL</th>
-                <th>Orders</th>
-              </tr>
-            </thead>
-            <tbody id="positions-body"></tbody>
-          </table>
-        </div>
-      </section>
+    <!-- MAIN CONTENT -->
+    <main class="content">
 
-      <section class="panel panel-trailing">
-        <div class="panel-head">
-          <h2>Trailing</h2>
-          <span class="panel-tag">next entry / close</span>
+      <!-- VIEW: OVERVIEW -->
+      <div id="view-overview" class="view is-active">
+        <div class="stats-bar">
+          <div class="stats-bot-label">
+            <span class="stats-label-text">Focused</span>
+            <span id="summary-meta" class="stats-meta-val">-</span>
+          </div>
+          <div class="stats-divider"></div>
+          <div class="stats-grid" id="summary-cards"></div>
         </div>
-        <div id="trailing-list" class="stack-list"></div>
-      </section>
 
-      <section class="panel panel-forager">
-        <div class="panel-head">
-          <h2>Forager</h2>
-        </div>
-        <div id="forager-details" class="detail-list"></div>
-      </section>
+        <div class="overview-main">
+          <div class="overview-left">
+            <section class="panel panel-bots">
+              <div class="panel-head">
+                <h2>Bot Overview</h2>
+                <span id="bots-meta" class="panel-tag">0 bots</span>
+              </div>
+              <div id="bot-overview" class="overview-grid"></div>
+            </section>
 
-      <section class="panel panel-unstuck">
-        <div class="panel-head">
-          <h2>Unstuck</h2>
-        </div>
-        <div id="unstuck-details" class="detail-list"></div>
-      </section>
+            <section class="panel panel-focus">
+              <div class="panel-head">
+                <h2>Focus</h2>
+                <span id="focus-label" class="panel-tag">auto</span>
+              </div>
+              <div id="focus-details" class="detail-list"></div>
+            </section>
+          </div>
 
-      <section class="panel panel-events">
-        <div class="panel-head">
-          <h2>Recent Events</h2>
+          <div class="overview-right">
+            <section class="panel panel-positions">
+              <div class="panel-head">
+                <h2>Positions</h2>
+                <span id="positions-meta" class="panel-tag">-</span>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Symbol</th>
+                      <th>Side</th>
+                      <th>Size @ Price</th>
+                      <th>WE</th>
+                      <th>WEL / WELe</th>
+                      <th>PA Dist</th>
+                      <th>uPnL</th>
+                      <th>Orders</th>
+                    </tr>
+                  </thead>
+                  <tbody id="positions-body"></tbody>
+                </table>
+              </div>
+            </section>
+          </div>
         </div>
-        <div id="events-list" class="stack-list"></div>
-      </section>
+      </div>
 
-      <section class="panel panel-ticks">
-        <div class="panel-head">
-          <h2>Price Ticks</h2>
-        </div>
-        <div id="ticks-list" class="stack-list"></div>
-      </section>
+      <!-- VIEW: ACTIVITY -->
+      <div id="view-activity" class="view">
+        <div class="activity-grid">
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Recent Events</h2>
+            </div>
+            <div id="events-list" class="stack-list"></div>
+          </section>
 
-      <section class="panel panel-orders">
-        <div class="panel-head">
-          <h2>Recent Orders</h2>
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Price Ticks</h2>
+            </div>
+            <div id="ticks-list" class="stack-list"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Recent Orders</h2>
+            </div>
+            <div id="orders-list" class="stack-list"></div>
+          </section>
         </div>
-        <div id="orders-list" class="stack-list"></div>
-      </section>
+      </div>
+
+      <!-- VIEW: ANALYSIS -->
+      <div id="view-analysis" class="view">
+        <div class="analysis-grid">
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Trailing</h2>
+              <span class="panel-tag">next entry / close</span>
+            </div>
+            <div id="trailing-list" class="stack-list"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Forager</h2>
+            </div>
+            <div id="forager-details" class="detail-list"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Unstuck</h2>
+            </div>
+            <div id="unstuck-details" class="detail-list"></div>
+          </section>
+        </div>
+      </div>
+
+      <!-- VIEW: CONFIG -->
+      <div id="view-config" class="view">
+        <div class="config-layout">
+
+          <!-- File list sidebar -->
+          <aside class="config-files-panel">
+            <div class="config-files-head">
+              <span class="config-files-title">Config Files</span>
+              <button id="config-refresh-btn" class="icon-btn" title="Refresh list">&#x21BB;</button>
+            </div>
+            <div id="config-file-list" class="config-file-list"></div>
+          </aside>
+
+          <!-- Editor area -->
+          <div class="config-editor-area">
+
+            <!-- Empty state -->
+            <div id="config-editor-empty" class="config-editor-empty">
+              <p>Select a config file on the left to view or edit it.</p>
+            </div>
+
+            <!-- Loaded file editor -->
+            <div id="config-editor-loaded" class="config-editor-loaded" style="display:none">
+              <div class="config-editor-head">
+                <span id="config-file-name" class="config-file-name-label"></span>
+                <div class="config-tab-group">
+                  <button id="config-tab-form" class="config-tab is-active" data-tab="form">Form</button>
+                  <button id="config-tab-raw" class="config-tab" data-tab="raw">Raw</button>
+                </div>
+                <div class="config-editor-actions">
+                  <span id="config-save-status" class="config-save-status"></span>
+                  <button id="config-activate-btn" class="config-activate-btn" style="display:none">Make Active</button>
+                  <button id="config-save-btn" class="config-save-btn" disabled>Save</button>
+                </div>
+              </div>
+
+              <!-- Form view -->
+              <div id="config-form-view" class="config-form-scroll"></div>
+
+              <!-- Raw view -->
+              <div id="config-raw-view" class="config-raw-view" style="display:none">
+                <textarea id="config-raw-textarea" class="config-raw-textarea" spellcheck="false"></textarea>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      </div>
+
     </main>
   </div>
 

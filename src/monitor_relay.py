@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
+import aiohttp
 from aiohttp import web
 
 
@@ -610,6 +611,260 @@ class MonitorRelay:
 
 
 RELAY_APP_KEY = web.AppKey("monitor_relay", MonitorRelay)
+DOCKER_APP_KEY = web.AppKey("docker_control", "DockerControl")
+MANAGED_KEYS_APP_KEY = web.AppKey("managed_keys", dict)
+
+
+class DockerControl:
+    def __init__(self, socket_path: str, container_name: str) -> None:
+        self.socket_path = socket_path
+        self.container_name = container_name
+
+    async def _request(self, method: str, path: str, body: Any = None) -> tuple[int, Any]:
+        connector = aiohttp.UnixConnector(path=self.socket_path)
+        kwargs: dict[str, Any] = {}
+        if body is not None:
+            kwargs["json"] = body
+        async with aiohttp.ClientSession(connector=connector) as session:
+            async with session.request(method, f"http://localhost{path}", **kwargs) as resp:
+                try:
+                    resp_body = await resp.json(content_type=None)
+                except Exception:
+                    resp_body = {}
+                return resp.status, resp_body
+
+    async def status(self) -> str:
+        try:
+            code, data = await self._request("GET", f"/containers/{self.container_name}/json")
+        except Exception as exc:
+            logging.warning("[docker-control] status error: %s", exc)
+            return "error"
+        if code == 404:
+            return "not_found"
+        state = data.get("State", {}) if isinstance(data, dict) else {}
+        if state.get("Running"):
+            return "running"
+        return "stopped"
+
+    async def _try_reconnect_network(self) -> bool:
+        """When a container has a stale network reference, connect it to the compose default network."""
+        try:
+            code, data = await self._request("GET", f"/containers/{self.container_name}/json")
+            if code != 200 or not isinstance(data, dict):
+                return False
+            labels = (data.get("Config") or {}).get("Labels") or {}
+            project = labels.get("com.docker.compose.project", "")
+            if not project:
+                return False
+            network_name = f"{project}_default"
+            code2, _ = await self._request(
+                "POST",
+                f"/networks/{network_name}/connect",
+                body={"Container": self.container_name},
+            )
+            if code2 in (200, 201, 204):
+                logging.info("[docker-control] reconnected %s to network %s", self.container_name, network_name)
+                return True
+            logging.warning("[docker-control] network reconnect returned %s", code2)
+            return False
+        except Exception as exc:
+            logging.warning("[docker-control] reconnect error: %s", exc)
+            return False
+
+    async def start(self) -> bool:
+        try:
+            code, data = await self._request("POST", f"/containers/{self.container_name}/start")
+            if code in (204, 304):
+                return True
+            # Stale network? Try reconnecting and retry.
+            msg = str((data or {}).get("message", "")) if isinstance(data, dict) else ""
+            if "network" in msg and "not found" in msg:
+                logging.info("[docker-control] stale network on start, attempting reconnect")
+                if await self._try_reconnect_network():
+                    code2, _ = await self._request("POST", f"/containers/{self.container_name}/start")
+                    return code2 in (204, 304)
+            logging.warning("[docker-control] start returned %s: %s", code, data)
+            return False
+        except Exception as exc:
+            logging.warning("[docker-control] start error: %s", exc)
+            return False
+
+    async def stop(self) -> bool:
+        try:
+            code, _ = await self._request("POST", f"/containers/{self.container_name}/stop")
+            return code in (204, 304)
+        except Exception as exc:
+            logging.warning("[docker-control] stop error: %s", exc)
+            return False
+
+
+CONFIG_APP_KEY = web.AppKey("config_manager", "ConfigManager")
+_ALLOWED_CONFIG_EXTS = frozenset({".hjson", ".json"})
+_BLOCKED_CONFIG_NAMES = frozenset({"api-keys.json", "api_keys.json"})
+_MAX_CONFIG_SIZE = 512 * 1024
+
+
+def _validate_config_syntax(content: str) -> None:
+    try:
+        import hjson as _hjson  # type: ignore[import]
+        _hjson.loads(content)
+        return
+    except ImportError:
+        pass
+    except Exception as exc:
+        raise ValueError(f"invalid HJSON syntax: {exc}") from exc
+    try:
+        json.loads(content)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid JSON syntax: {exc}") from exc
+
+
+class ConfigManager:
+    def __init__(self, config_root: str) -> None:
+        self.root = Path(config_root).expanduser().resolve()
+
+    def _safe_path(self, rel: str) -> Path:
+        if not rel:
+            raise ValueError("file path is required")
+        if any(part == ".." for part in Path(rel).parts):
+            raise ValueError("invalid path")
+        path = (self.root / rel).resolve()
+        root_str = str(self.root)
+        if str(path) != root_str and not str(path).startswith(root_str + "/"):
+            raise ValueError("path outside config root")
+        if path.suffix.lower() not in _ALLOWED_CONFIG_EXTS:
+            raise ValueError(f"unsupported file type: {path.suffix}")
+        if path.name in _BLOCKED_CONFIG_NAMES:
+            raise ValueError("access to this file is restricted")
+        return path
+
+    def list_files(self) -> list[dict]:
+        if not self.root.exists():
+            return []
+        result = []
+        for path in sorted(self.root.rglob("*")):
+            if not path.is_file():
+                continue
+            if path.suffix.lower() not in _ALLOWED_CONFIG_EXTS:
+                continue
+            if path.name.startswith("."):
+                continue
+            if path.name in _BLOCKED_CONFIG_NAMES:
+                continue
+            rel = str(path.relative_to(self.root))
+            dir_rel = str(path.parent.relative_to(self.root)) if path.parent != self.root else ""
+            try:
+                size = path.stat().st_size
+            except FileNotFoundError:
+                continue
+            result.append({"path": rel, "name": path.name, "dir": dir_rel, "size": size})
+        return result
+
+    def read_file(self, rel: str) -> tuple[str, Any]:
+        path = self._safe_path(rel)
+        if not path.exists():
+            raise FileNotFoundError(f"config not found: {rel}")
+        text = path.read_text(encoding="utf-8")
+        parsed = None
+        try:
+            import hjson as _hjson  # type: ignore[import]
+            parsed = _hjson.loads(text)
+        except ImportError:
+            try:
+                parsed = json.loads(text)
+            except Exception:
+                pass
+        except Exception:
+            try:
+                parsed = json.loads(text)
+            except Exception:
+                pass
+        return text, parsed
+
+    def save_file(self, rel: str, content: str) -> None:
+        path = self._safe_path(rel)
+        if len(content.encode("utf-8")) > _MAX_CONFIG_SIZE:
+            raise ValueError("file too large")
+        _validate_config_syntax(content)
+        path.write_text(content, encoding="utf-8")
+        logging.info("[config-manager] saved %s", rel)
+
+    def duplicate_file(self, rel: str, new_name: str) -> str:
+        src = self._safe_path(rel)
+        if not src.exists():
+            raise FileNotFoundError(f"config not found: {rel}")
+        if not new_name or "/" in new_name or "\\" in new_name:
+            raise ValueError("new name must be a simple filename")
+        parent = Path(rel).parent
+        new_rel = str(parent / new_name) if str(parent) != "." else new_name
+        dest = self._safe_path(new_rel)
+        if dest.exists():
+            raise FileExistsError(f"already exists: {new_rel}")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(src.read_bytes())
+        logging.info("[config-manager] duplicated %s → %s", rel, new_rel)
+        return new_rel
+
+
+async def _handle_configs_list(request: web.Request) -> web.Response:
+    cm: Optional[ConfigManager] = request.app.get(CONFIG_APP_KEY)
+    if cm is None:
+        raise web.HTTPServiceUnavailable(text="config manager not configured")
+    return web.json_response({"files": cm.list_files()})
+
+
+async def _handle_configs_read(request: web.Request) -> web.Response:
+    cm: Optional[ConfigManager] = request.app.get(CONFIG_APP_KEY)
+    if cm is None:
+        raise web.HTTPServiceUnavailable(text="config manager not configured")
+    rel = request.query.get("file", "")
+    try:
+        text, parsed = cm.read_file(rel)
+    except FileNotFoundError as exc:
+        raise web.HTTPNotFound(text=str(exc)) from exc
+    except ValueError as exc:
+        raise web.HTTPBadRequest(text=str(exc)) from exc
+    return web.json_response({"content": text, "parsed": parsed})
+
+
+async def _handle_configs_save(request: web.Request) -> web.Response:
+    cm: Optional[ConfigManager] = request.app.get(CONFIG_APP_KEY)
+    if cm is None:
+        raise web.HTTPServiceUnavailable(text="config manager not configured")
+    rel = request.query.get("file", "")
+    try:
+        body = await request.json()
+    except Exception:
+        raise web.HTTPBadRequest(text="invalid JSON body")
+    content = body.get("content", "") if isinstance(body, dict) else ""
+    try:
+        cm.save_file(rel, content)
+    except FileNotFoundError as exc:
+        raise web.HTTPNotFound(text=str(exc)) from exc
+    except (ValueError, FileExistsError) as exc:
+        raise web.HTTPBadRequest(text=str(exc)) from exc
+    return web.json_response({"ok": True})
+
+
+async def _handle_configs_duplicate(request: web.Request) -> web.Response:
+    cm: Optional[ConfigManager] = request.app.get(CONFIG_APP_KEY)
+    if cm is None:
+        raise web.HTTPServiceUnavailable(text="config manager not configured")
+    try:
+        body = await request.json()
+    except Exception:
+        raise web.HTTPBadRequest(text="invalid JSON body")
+    if not isinstance(body, dict):
+        raise web.HTTPBadRequest(text="expected JSON object")
+    rel = body.get("file", "")
+    new_name = body.get("name", "")
+    try:
+        new_rel = cm.duplicate_file(rel, new_name)
+    except FileNotFoundError as exc:
+        raise web.HTTPNotFound(text=str(exc)) from exc
+    except (ValueError, FileExistsError) as exc:
+        raise web.HTTPBadRequest(text=str(exc)) from exc
+    return web.json_response({"ok": True, "path": new_rel})
 
 
 def _relay_from_app(app: web.Application) -> MonitorRelay:
@@ -709,6 +964,74 @@ async def _handle_ws(request: web.Request) -> web.StreamResponse:
     return ws
 
 
+async def _handle_control_status(request: web.Request) -> web.Response:
+    docker: Optional[DockerControl] = request.app.get(DOCKER_APP_KEY)
+    if docker is None:
+        return web.json_response({"status": "unavailable", "reason": "docker control not configured"})
+    status = await docker.status()
+    return web.json_response({"status": status, "container": docker.container_name})
+
+
+async def _handle_control_start(request: web.Request) -> web.Response:
+    docker: Optional[DockerControl] = request.app.get(DOCKER_APP_KEY)
+    if docker is None:
+        raise web.HTTPServiceUnavailable(text="docker control not configured")
+    ok = await docker.start()
+    status = await docker.status()
+    return web.json_response({"ok": ok, "status": status})
+
+
+async def _handle_control_stop(request: web.Request) -> web.Response:
+    docker: Optional[DockerControl] = request.app.get(DOCKER_APP_KEY)
+    if docker is None:
+        raise web.HTTPServiceUnavailable(text="docker control not configured")
+    ok = await docker.stop()
+    status = await docker.status()
+    return web.json_response({"ok": ok, "status": status})
+
+
+async def _handle_control_managed(request: web.Request) -> web.Response:
+    managed: dict = request.app.get(MANAGED_KEYS_APP_KEY) or {}
+    result = [
+        {"key": f"{ex}/{us}", "exchange": ex, "user": us, "container": dc.container_name}
+        for (ex, us), dc in managed.items()
+    ]
+    return web.json_response({"managed": result})
+
+
+def _get_managed_docker(request: web.Request) -> Optional[DockerControl]:
+    managed: dict = request.app.get(MANAGED_KEYS_APP_KEY) or {}
+    exchange = request.match_info.get("exchange", "")
+    user = request.match_info.get("user", "")
+    return managed.get((exchange, user))
+
+
+async def _handle_key_control_status(request: web.Request) -> web.Response:
+    docker = _get_managed_docker(request)
+    if docker is None:
+        return web.json_response({"status": "unavailable", "reason": "not managed"})
+    status = await docker.status()
+    return web.json_response({"status": status, "container": docker.container_name})
+
+
+async def _handle_key_control_start(request: web.Request) -> web.Response:
+    docker = _get_managed_docker(request)
+    if docker is None:
+        raise web.HTTPNotFound(text="bot key not managed")
+    ok = await docker.start()
+    status = await docker.status()
+    return web.json_response({"ok": ok, "status": status})
+
+
+async def _handle_key_control_stop(request: web.Request) -> web.Response:
+    docker = _get_managed_docker(request)
+    if docker is None:
+        raise web.HTTPNotFound(text="bot key not managed")
+    ok = await docker.stop()
+    status = await docker.status()
+    return web.json_response({"ok": ok, "status": status})
+
+
 async def _on_startup(app: web.Application) -> None:
     await _relay_from_app(app).start()
 
@@ -717,12 +1040,27 @@ async def _on_cleanup(app: web.Application) -> None:
     await _relay_from_app(app).stop()
 
 
+def _parse_managed_key(spec: str) -> tuple[str, str, str]:
+    """Parse 'exchange/user:container_name' into (exchange, user, container_name)."""
+    if ":" not in spec:
+        raise ValueError(f"invalid --managed-key format (expected exchange/user:container): {spec!r}")
+    key_part, container = spec.rsplit(":", 1)
+    if "/" not in key_part:
+        raise ValueError(f"invalid --managed-key format (key must be exchange/user): {spec!r}")
+    exchange, user = key_part.split("/", 1)
+    return exchange.strip(), user.strip(), container.strip()
+
+
 def create_monitor_relay_app(
     *,
     monitor_root: str = "monitor",
     poll_interval_ms: int = 250,
     subscriber_queue_size: int = 1000,
     ws_replay_limit: int = 50,
+    docker_socket: Optional[str] = None,
+    managed_container: Optional[str] = None,
+    managed_keys: Optional[list[str]] = None,
+    config_root: Optional[str] = None,
 ) -> web.Application:
     relay = MonitorRelay(
         monitor_root=monitor_root,
@@ -732,11 +1070,43 @@ def create_monitor_relay_app(
     )
     app = web.Application()
     app[RELAY_APP_KEY] = relay
+    if docker_socket and managed_container:
+        app[DOCKER_APP_KEY] = DockerControl(
+            socket_path=docker_socket,
+            container_name=managed_container,
+        )
+        logging.info("[monitor-relay] docker control enabled: socket=%s container=%s", docker_socket, managed_container)
+    if docker_socket and managed_keys:
+        per_key: dict[tuple[str, str], DockerControl] = {}
+        for spec in managed_keys:
+            try:
+                exchange, user, container = _parse_managed_key(spec)
+            except ValueError as exc:
+                logging.error("[monitor-relay] skipping bad --managed-key %r: %s", spec, exc)
+                continue
+            per_key[(exchange, user)] = DockerControl(socket_path=docker_socket, container_name=container)
+            logging.info("[monitor-relay] per-key control: %s/%s → %s", exchange, user, container)
+        if per_key:
+            app[MANAGED_KEYS_APP_KEY] = per_key
+    if config_root:
+        app[CONFIG_APP_KEY] = ConfigManager(config_root)
+        logging.info("[monitor-relay] config manager enabled: root=%s", config_root)
     app.router.add_get("/health", _handle_health)
     app.router.add_get("/snapshot", _handle_snapshot)
     app.router.add_get("/dashboard", _handle_dashboard)
     app.router.add_get("/dashboard/assets/{name}", _handle_dashboard_asset)
     app.router.add_get("/ws", _handle_ws)
+    app.router.add_get("/control/status", _handle_control_status)
+    app.router.add_post("/control/start", _handle_control_start)
+    app.router.add_post("/control/stop", _handle_control_stop)
+    app.router.add_get("/control/managed", _handle_control_managed)
+    app.router.add_get("/control/{exchange}/{user}/status", _handle_key_control_status)
+    app.router.add_post("/control/{exchange}/{user}/start", _handle_key_control_start)
+    app.router.add_post("/control/{exchange}/{user}/stop", _handle_key_control_stop)
+    app.router.add_get("/configs", _handle_configs_list)
+    app.router.add_get("/configs/content", _handle_configs_read)
+    app.router.add_put("/configs/content", _handle_configs_save)
+    app.router.add_post("/configs/duplicate", _handle_configs_duplicate)
     app.on_startup.append(_on_startup)
     app.on_cleanup.append(_on_cleanup)
     return app

@@ -64,6 +64,32 @@ def _parse_args() -> argparse.Namespace:
         default="INFO",
         help="Logging level for the relay process.",
     )
+    parser.add_argument(
+        "--docker-socket",
+        type=str,
+        default=None,
+        help="Path to Docker Unix socket for bot control (e.g. /var/run/docker.sock).",
+    )
+    parser.add_argument(
+        "--managed-container",
+        type=str,
+        default=None,
+        help="Docker container name to start/stop via the /control/* endpoints.",
+    )
+    parser.add_argument(
+        "--managed-key",
+        dest="managed_keys",
+        action="append",
+        default=None,
+        metavar="EXCHANGE/USER:CONTAINER",
+        help="Map a bot key to a Docker container for per-bot start/stop control. Repeatable.",
+    )
+    parser.add_argument(
+        "--config-root",
+        type=str,
+        default=None,
+        help="Path to configs directory to enable config editor API.",
+    )
     return parser.parse_args()
 
 
@@ -75,6 +101,10 @@ def main() -> None:
         poll_interval_ms=args.poll_interval_ms,
         subscriber_queue_size=args.queue_size,
         ws_replay_limit=args.ws_replay_limit,
+        docker_socket=args.docker_socket,
+        managed_container=args.managed_container,
+        managed_keys=args.managed_keys,
+        config_root=args.config_root,
     )
     logging.info(
         "[monitor-relay] serving monitor_root=%s host=%s port=%s poll_interval_ms=%s ws_replay_limit=%s",
