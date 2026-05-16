@@ -168,19 +168,27 @@ class HyperliquidBot(CCXTBot):
                 "dex": ["xyz"],  # TradeXYZ DEX for stock perps (TSLA, NVDA, etc.)
             },
         }
+        sandbox = bool(self.user_info.get("sandbox", False))
         if self.ws_enabled:
             self.ccp = getattr(ccxt_pro, self.exchange)(creds)
             self.ccp.options.update(self._build_ccxt_options())
             self.ccp.options["defaultType"] = "swap"
             self.ccp.options["fetchMarkets"] = fetch_markets_config
-            self._apply_endpoint_override(self.ccp)
+            if sandbox:
+                self.ccp.set_sandbox_mode(True)
+            else:
+                self._apply_endpoint_override(self.ccp)
         elif self.endpoint_override:
             logging.info("Skipping Hyperliquid websocket session due to custom endpoint override.")
         self.cca = getattr(ccxt_async, self.exchange)(creds)
         self.cca.options.update(self._build_ccxt_options())
         self.cca.options["defaultType"] = "swap"
         self.cca.options["fetchMarkets"] = fetch_markets_config
-        self._apply_endpoint_override(self.cca)
+        if sandbox:
+            self.cca.set_sandbox_mode(True)
+            logging.info("Hyperliquid sandbox mode enabled (testnet URLs + EIP-712 source='b')")
+        else:
+            self._apply_endpoint_override(self.cca)
 
     def set_market_specific_settings(self):
         super().set_market_specific_settings()
